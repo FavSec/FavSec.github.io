@@ -1,1 +1,1 @@
-# FavSec.github.io
+Welcome to my personal portfolio of web security projects. This repository serves as a collection of tools, write-ups, experiments, and demonstrations that reflect my ongoing journey into offensive security, defensive strategies, secure system design, and practical vulnerability research.

